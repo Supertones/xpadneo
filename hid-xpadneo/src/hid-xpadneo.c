@@ -889,10 +889,6 @@ static int xpadneo_input_configured(struct hid_device *hdev, struct hid_input *h
 		hid_info(hdev, "keyboard detected\n");
 		xdata->keyboard = hi->input;
 		return 0;
-	case HID_CP_CONSUMER_CONTROL:
-		hid_info(hdev, "consumer control detected\n");
-		xdata->consumer = hi->input;
-		return 0;
 	case 0xFF000005:
 		hid_info(hdev, "mapping profiles detected\n");
 		xdata->quirks |= XPADNEO_QUIRK_USE_HW_PROFILES;
@@ -923,10 +919,6 @@ static int xpadneo_input_configured(struct hid_device *hdev, struct hid_input *h
 	/* combine triggers to form a rudder, use ABS_MISC to order after dpad */
 	input_set_abs_params(xdata->gamepad, ABS_MISC, -1023, 1023, 3, 63);
 
-	/* do not report the consumer control buttons as part of the gamepad */
-	__clear_bit(BTN_XBOX, xdata->gamepad->keybit);
-	__clear_bit(BTN_SHARE, xdata->gamepad->keybit);
-
 	return 0;
 }
 
@@ -935,7 +927,6 @@ static int xpadneo_event(struct hid_device *hdev, struct hid_field *field,
 {
 	struct xpadneo_devdata *xdata = hid_get_drvdata(hdev);
 	struct input_dev *gamepad = xdata->gamepad;
-	struct input_dev *consumer = xdata->consumer;
 
 	if (usage->type == EV_ABS) {
 		switch (usage->code) {
@@ -957,64 +948,6 @@ static int xpadneo_event(struct hid_device *hdev, struct hid_field *field,
 			xdata->last_abs_rz = value;
 			goto combine_z_axes;
 		}
-	} else if ((usage->type == EV_KEY) && (usage->code == BTN_XBOX)) {
-		/*
-		 * Handle the Xbox logo button: We want to cache the button
-		 * down event to allow for profile switching. The button will
-		 * act as a shift key and only send the input events when
-		 * released without pressing an additional button.
-		 */
-		if (!xdata->xbox_button_down && (value == 1)) {
-			/* cache this event */
-			xdata->xbox_button_down = true;
-		} else if (xdata->xbox_button_down && (value == 0)) {
-			xdata->xbox_button_down = false;
-			if (xdata->profile_switched) {
-				xdata->profile_switched = false;
-			} else if (consumer) {
-				/* replay cached event */
-				input_report_key(consumer, BTN_XBOX, 1);
-				input_sync(consumer);
-				/* synthesize the release to remove the scan code */
-				input_report_key(consumer, BTN_XBOX, 0);
-				input_sync(consumer);
-			}
-		}
-		if (!consumer)
-			goto consumer_missing;
-		goto stop_processing;
-	} else if ((usage->type == EV_KEY) && (usage->code == BTN_SHARE)) {
-		/* move the Share button to the consumer control device */
-		if (!consumer)
-			goto consumer_missing;
-		input_report_key(consumer, BTN_SHARE, value);
-		input_sync(consumer);
-		goto stop_processing;
-	} else if (xdata->xbox_button_down && (usage->type == EV_KEY)) {
-		if (!(xdata->quirks & XPADNEO_QUIRK_USE_HW_PROFILES)) {
-			switch (usage->code) {
-			case BTN_A:
-				if (value == 1)
-					xpadneo_switch_profile(xdata, 0, true);
-				goto stop_processing;
-			case BTN_B:
-				if (value == 1)
-					xpadneo_switch_profile(xdata, 1, true);
-				goto stop_processing;
-			case BTN_X:
-				if (value == 1)
-					xpadneo_switch_profile(xdata, 2, true);
-				goto stop_processing;
-			case BTN_Y:
-				if (value == 1)
-					xpadneo_switch_profile(xdata, 3, true);
-				goto stop_processing;
-			case BTN_SELECT:
-				if (value == 1)
-					xpadneo_toggle_mouse(xdata);
-				goto stop_processing;
-			}
-		}
 	}
 
 	/* Let hid-core handle the event */
@@ -1026,12 +959,6 @@ combine_z_axes:
 		input_report_abs(gamepad, ABS_MISC, xdata->last_abs_rz - xdata->last_abs_z);
 	}
 	return 0;
-
-consumer_missing:
-	if ((xdata->missing_reported && XPADNEO_MISSING_CONSUMER) == 0) {
-		xdata->missing_reported |= XPADNEO_MISSING_CONSUMER;
-		hid_err(hdev, "consumer control not detected\n");
-	}
 
 stop_processing:
 	return 1;
@@ -1202,10 +1129,6 @@ static int xpadneo_probe(struct hid_device *hdev, const struct hid_device_id *id
 		hid_err(hdev, "hw start failed\n");
 		return ret;
 	}
-
-	ret = xpadneo_init_consumer(xdata);
-	if (ret)
-		return ret;
 
 	ret = xpadneo_init_hw(hdev);
 	if (ret) {
